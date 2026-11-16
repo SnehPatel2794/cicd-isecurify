@@ -1,0 +1,9 @@
+# Staging overlay. Use together with the main file, from a SEPARATE directory with its own .env (see docs/STAGING.md and .env.staging.example):
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d --build        (deploy/staging.sh does this for you)
+# What differs from production: its own project name (so containers and volumes never mix with production), a Caddy certificate from its own CA,
+# and a banner in the app. Mail stays switched off by leaving SMTP_HOST empty in the staging .env.
+name: isecurify-grc-staging
+services:
+  web:
+    volumes:
+      - ./web/Caddyfile.staging:/etc/caddy/Caddyfile:ro

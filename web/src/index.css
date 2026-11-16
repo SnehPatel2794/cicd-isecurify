@@ -1,0 +1,9 @@
+@tailwind base; @tailwind components; @tailwind utilities;
+/* Defaults = the iSecurify purple. The branding profile replaces these at start-up (see branding.tsx). */
+:root { --brand: 129 38 113; --brand-dark: 97 29 85; --brand-light: 245 238 244; }
+@layer components {
+  .btn { @apply inline-flex items-center justify-center rounded-md bg-brand px-3 py-2 text-sm font-medium text-white hover:bg-brand-dark disabled:opacity-50; }
+  .btn-secondary { @apply inline-flex items-center justify-center rounded-md border border-brand px-3 py-2 text-sm font-medium text-brand hover:bg-brand-light disabled:opacity-50; }
+  .input { @apply mt-1 mb-3 block w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand focus:outline-none; }
+  .card { @apply rounded-lg border border-slate-200 bg-white p-4 shadow-sm; }
+}

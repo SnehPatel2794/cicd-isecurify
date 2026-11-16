@@ -1,0 +1,33 @@
+import { test, expect, vi, beforeEach, afterEach } from 'vitest'; import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'; import { QueryClient, QueryClientProvider } from '@tanstack/react-query'; import { MemoryRouter } from 'react-router-dom';
+vi.mock('./api', async (orig) => ({ ...(await orig<any>()), api: vi.fn() })); import { api } from './api'; import { EngagementDashboard, WipeDialog, TaskPanels, donePct, goto } from './pages27'; import { PortfolioPage } from './pages12';
+const wrap = (ui: any) => render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>{ui}</QueryClientProvider></MemoryRouter>);
+beforeEach(() => (api as any).mockReset()); afterEach(cleanup);
+const tasks = { total: 8, open: 5, done: 3, overdue: 2, dueThisWeek: 1, unassigned: 1, byStatus: { not_started: 2, in_progress: 2, blocked: 1, done: 3 }, byAssignee: [{ id: 'u', name: 'Priya', open: 3, overdue: 2 }], byPhase: [{ phase: 1, done: 3, open: 1 }], phaseNames: ['Preparation', 'Scheduling', 'Audit Meeting', 'Follow-up', 'Closure'],
+  overdueList: [{ id: 't1', taskNo: 4, title: 'Sign NDAs', dueDate: '2026-11-01', assigneeName: 'Priya', engagementName: 'Techify' }], upcoming: [] };
+const dash = { engagement: { id: 'e', name: 'Techify', status: 'active', phase: 2, phaseName: 'Scheduling', phases: ['Preparation', 'Scheduling', 'Audit Meeting', 'Follow-up', 'Closure'] }, freshness: { source: 'live', computedAt: null, ageMinutes: null, stale: false, staleAfterMinutes: 30 },
+  readiness: { applicable: 10, effective: 4, readinessPercent: 40, overdue: 1 }, findings: { unresolved: 3, blocking: 1, overdue: 0, unresolvedBySeverity: { critical: 1, high: 1, medium: 1, low: 0, observation: 0 } }, evidence: { byStatus: { requested: 2, submitted: 3, accepted: 4, rejected: 0 }, expiring30: 1, expired: 0 }, certificates: { valid: 1, expiringSoon: 0, expired: 0 }, tasks };
+
+test('helpers: done percent and click-through links', () => { expect(donePct({ done: 3, total: 8 })).toBe(38); expect(donePct({ done: 0, total: 0 })).toBeNull(); expect(goto('t', 'e', 'tasks', '&task=x')).toBe('/org/t/engagements/e?tab=tasks&task=x'); });
+test('the engagement dashboard shows figures and every figure leads to its list', async () => {
+  (api as any).mockResolvedValue(dash); const go = vi.fn(); wrap(<EngagementDashboard tid="t" eid="e" onGo={go} />);
+  expect(await screen.findByText('40%')).toBeTruthy(); expect(screen.getByText('4 of 10 items effective')).toBeTruthy(); expect(screen.getByRole('listitem', { current: 'step' }).textContent).toContain('2. Scheduling');
+  fireEvent.click(screen.getByRole('button', { name: 'Overdue tasks: open' })); expect(go).toHaveBeenLastCalledWith('Tasks', 'overdue'); fireEvent.click(screen.getByRole('button', { name: 'Awaiting review: open' })); expect(go).toHaveBeenLastCalledWith('Evidence');
+  fireEvent.click(screen.getByRole('button', { name: 'Unresolved findings: open' })); expect(go).toHaveBeenLastCalledWith('Findings'); fireEvent.click(screen.getByRole('button', { name: 'Blocked' })); expect(go).toHaveBeenLastCalledWith('Tasks', 'status:blocked');
+  expect(screen.getByRole('link', { name: /T-004 Sign NDAs/ }).getAttribute('href')).toBe('/org/t/engagements/e?tab=tasks&task=t1'); expect(screen.getByText('Priya')).toBeTruthy(); expect(screen.getByText('2 overdue')).toBeTruthy(); expect(screen.getByText(/1 open task has nobody assigned/)).toBeTruthy();
+});
+test('task panels say so when there are no tasks', () => { wrap(<TaskPanels t={{ total: 0 }} link={() => '#'} />); expect(screen.getByText('No tasks yet.')).toBeTruthy(); });
+test('the wipe button stays off until the name and password are given, and reports the result', async () => {
+  (api as any).mockImplementation(async (m: string, u: string) => u === '/platform/demo' ? { wipeConfigured: true, canWipe: true } : { ok: true, rowsTotal: 120, filesRemoved: 3, filesFailed: 0, peopleRemoved: 2 });
+  const done = vi.fn(); wrap(<WipeDialog org={{ id: 'o', name: 'Demo Corp' }} onClose={() => {}} onDone={done} />); const btn = await screen.findByRole('button', { name: 'Wipe permanently' }) as HTMLButtonElement; await waitFor(() => expect(btn.disabled).toBe(true));
+  fireEvent.change(screen.getByLabelText(/Type the organization name/), { target: { value: 'demo corp' } }); fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'pw' } }); expect(btn.disabled).toBe(true); fireEvent.change(screen.getByLabelText(/Type the organization name/), { target: { value: 'Demo Corp' } }); expect(btn.disabled).toBe(false);
+  fireEvent.click(btn); expect(await screen.findByText(/120 records, 3 files and 2 people were removed/)).toBeTruthy(); expect(api).toHaveBeenCalledWith('POST', '/platform/organizations/o/wipe', { confirmName: 'Demo Corp', password: 'pw', removePeople: true });
+});
+test('the wipe dialog explains when the server is not set up', async () => {
+  (api as any).mockResolvedValue({ wipeConfigured: false, canWipe: true }); wrap(<WipeDialog org={{ id: 'o', name: 'X Demo' }} onClose={() => {}} onDone={() => {}} />); expect(await screen.findByText(/not set up on this server/)).toBeTruthy(); expect((screen.getByRole('button', { name: 'Wipe permanently' }) as HTMLButtonElement).disabled).toBe(true);
+});
+test('the portfolio shows all organizations for an administrator, marks demo ones, and filters', async () => {
+  const o = (id: string, name: string, extra: any = {}) => ({ id, name, status: 'active', isDemo: false, assigned: false, tasks: { open: 2, overdue: 1 }, activeEngagements: 1, readinessPercent: 50, unresolvedFindings: 1, criticalUnresolved: 0, overdueFindings: 0, overdueItems: 0, certificates: { valid: 0, expiringSoon: 0, expired: 0 }, attention: ['1 task overdue'], ...extra });
+  (api as any).mockResolvedValue({ scope: 'all', totals: { organizations: 2, activeEngagements: 2, unresolvedFindings: 2, overdueFindings: 0, needAttention: 2, openTasks: 4, overdueTasks: 2 }, organizations: [o('a', 'Real Co', { assigned: true }), o('b', 'Demo Co', { isDemo: true })], freshness: { source: 'live', computedAt: null, ageMinutes: null, stale: false, staleAfterMinutes: 30 } });
+  wrap(<PortfolioPage />); expect(await screen.findByText('2 organizations on the platform')).toBeTruthy(); expect(screen.getByText('demo')).toBeTruthy(); expect(screen.getByRole('link', { name: 'Real Co' })).toBeTruthy(); expect(screen.queryByRole('link', { name: 'Demo Co' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('Show'), { target: { value: 'demo' } }); expect(screen.queryByText('Real Co')).toBeNull(); expect(screen.getByText('Demo Co')).toBeTruthy();
+});

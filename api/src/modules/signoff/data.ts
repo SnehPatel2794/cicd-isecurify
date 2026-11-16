@@ -1,0 +1,12 @@
+// TENANT-SCOPED DATA LAYER for engagement sign-offs. The only file that runs SQL on engagement_signoffs.
+import { q, type Conn } from '../../db';
+const COLS = `s.id, s.engagement_id engagementId, s.kind, s.opinion, s.note, s.applicable_controls applicable, s.effective_controls effective, s.unresolved_findings unresolved, s.signed_by signedById, u.name signedBy, s.signed_at signedAt, s.withdrawn_at withdrawnAt, wu.name withdrawnBy, s.withdraw_reason withdrawReason`;
+const FROM = 'FROM engagement_signoffs s JOIN users u ON u.id=s.signed_by LEFT JOIN users wu ON wu.id=s.withdrawn_by';
+export const listFor = (c: Conn, tenantId: string, engagementId: string) => q(c, `SELECT ${COLS} ${FROM} WHERE s.tenant_id=? AND s.engagement_id=? ORDER BY s.signed_at DESC, s.id DESC`, [tenantId, engagementId]);
+export const activeFor = async (c: Conn, tenantId: string, engagementId: string, lock = false) => (await q(c, `SELECT ${COLS} ${FROM} WHERE s.tenant_id=? AND s.engagement_id=? AND s.withdrawn_at IS NULL ORDER BY s.signed_at DESC, s.id DESC LIMIT 1 ${lock ? 'FOR UPDATE' : ''}`, [tenantId, engagementId]))[0] ?? null;
+export const get = async (c: Conn, tenantId: string, id: string) => (await q(c, `SELECT ${COLS} ${FROM} WHERE s.tenant_id=? AND s.id=?`, [tenantId, id]))[0] ?? null;
+export async function insert(c: Conn, tenantId: string, r: { id: string; engagementId: string; kind: 'auditor' | 'waiver'; opinion: string | null; note: string; applicable: number; effective: number; unresolved: number; signedBy: string }) {
+  await c.query('INSERT INTO engagement_signoffs(tenant_id,id,engagement_id,kind,opinion,note,applicable_controls,effective_controls,unresolved_findings,signed_by) VALUES (?,?,?,?,?,?,?,?,?,?)', [tenantId, r.id, r.engagementId, r.kind, r.opinion, r.note, r.applicable, r.effective, r.unresolved, r.signedBy]);
+}
+export const withdraw = async (c: Conn, tenantId: string, id: string, by: string, reason: string) => { await c.query('UPDATE engagement_signoffs SET withdrawn_at=NOW(3), withdrawn_by=?, withdraw_reason=? WHERE tenant_id=? AND id=? AND withdrawn_at IS NULL', [by, reason, tenantId, id]); };
+export const auditorCount = async (c: Conn, tenantId: string, engagementId: string) => Number((await q(c, "SELECT COUNT(*) n FROM engagement_members m JOIN users u ON u.id=m.user_id WHERE m.tenant_id=? AND m.engagement_id=? AND m.member_role='auditor' AND u.status='active'", [tenantId, engagementId]))[0].n);

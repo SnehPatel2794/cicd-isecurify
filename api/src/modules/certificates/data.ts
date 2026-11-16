@@ -1,0 +1,23 @@
+// TENANT-SCOPED DATA LAYER for certificates. The only file that runs SQL on the certificates table.
+import { q, type Conn } from '../../db';
+const D = (col: string, as: string) => `DATE_FORMAT(${col},'%Y-%m-%d') ${as}`;
+const COLS = `c.id, c.tenant_id tenantId, c.serial, CONCAT('ISG-', DATE_FORMAT(c.issued_on,'%Y'), '-', LPAD(c.serial, 6, '0')) number, c.engagement_id engagementId, c.framework_id frameworkId, c.organization_name organizationName, c.engagement_name engagementName,
+  c.framework_name frameworkName, c.framework_version frameworkVersion, c.scope, ${D('c.issued_on', 'issuedOn')}, ${D('c.valid_until', 'validUntil')}, c.verify_code verifyCode, c.applicable_controls applicable, c.effective_controls effective, c.override_reason overrideReason, c.opinion, c.signoff_id signoffId,
+  c.issued_by issuedById, iu.name issuedBy, c.created_at createdAt, c.revoked_at revokedAt, ru.name revokedBy, c.revoke_reason revokeReason, c.superseded_by supersededBy`;
+const FROM = `FROM certificates c JOIN users iu ON iu.id=c.issued_by LEFT JOIN users ru ON ru.id=c.revoked_by`;
+export type NewCert = { id: string; tenantId: string; engagementId: string; frameworkId: string; organizationName: string; engagementName: string; frameworkName: string; frameworkVersion: number; scope: string; issuedOn: string; validUntil: string; verifyCode: string; applicable: number; effective: number; overrideReason: string | null; issuedBy: string; opinion: string | null; signoffId: string | null };
+export async function insertCertificate(c: Conn, n: NewCert) {
+  await c.query('INSERT INTO certificates(id,tenant_id,engagement_id,framework_id,organization_name,engagement_name,framework_name,framework_version,scope,issued_on,valid_until,verify_code,applicable_controls,effective_controls,override_reason,issued_by,opinion,signoff_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    [n.id, n.tenantId, n.engagementId, n.frameworkId, n.organizationName, n.engagementName, n.frameworkName, n.frameworkVersion, n.scope, n.issuedOn, n.validUntil, n.verifyCode, n.applicable, n.effective, n.overrideReason, n.issuedBy, n.opinion, n.signoffId]);
+}
+export const getCertificate = async (c: Conn, tenantId: string, id: string, lock = false) => (await q(c, `SELECT ${COLS} ${FROM} WHERE c.tenant_id=? AND c.id=? ${lock ? 'FOR UPDATE' : ''}`, [tenantId, id]))[0] ?? null;
+export const listCertificates = (c: Conn, tenantId: string, engagementIds?: string[]) => q(c, `SELECT ${COLS} ${FROM} WHERE c.tenant_id=? ${engagementIds ? `AND c.engagement_id IN (${engagementIds.length ? engagementIds.map(() => '?').join(',') : "''"})` : ''} ORDER BY c.issued_on DESC, c.serial DESC LIMIT 500`, [tenantId, ...(engagementIds ?? [])]);
+/** Certificates for this organization and framework that are still in force (not revoked, not superseded). */
+export const activeFor = (c: Conn, tenantId: string, frameworkId: string) => q(c, 'SELECT id FROM certificates WHERE tenant_id=? AND framework_id=? AND revoked_at IS NULL AND superseded_by IS NULL FOR UPDATE', [tenantId, frameworkId]);
+export const markSuperseded = async (c: Conn, tenantId: string, ids: string[], by: string) => { if (ids.length) await c.query(`UPDATE certificates SET superseded_by=? WHERE tenant_id=? AND superseded_by IS NULL AND id IN (${ids.map(() => '?').join(',')})`, [by, tenantId, ...ids]); };
+export const markRevoked = async (c: Conn, tenantId: string, id: string, by: string, reason: string) => ((await c.query('UPDATE certificates SET revoked_at=NOW(3), revoked_by=?, revoke_reason=? WHERE tenant_id=? AND id=? AND revoked_at IS NULL', [by, reason, tenantId, id]))[0] as any).affectedRows as number;
+/** Public lookup by the code printed on the certificate. Returns only what the public status page may show. */
+export const findPublicByCode = async (c: Conn, code: string) => (await q(c, `SELECT c.opinion opinion, CONCAT('ISG-', DATE_FORMAT(c.issued_on,'%Y'), '-', LPAD(c.serial, 6, '0')) number, c.organization_name organizationName, c.framework_name frameworkName, c.framework_version frameworkVersion, c.scope, ${D('c.issued_on', 'issuedOn')}, ${D('c.valid_until', 'validUntil')},
+  c.revoked_at revokedAt, c.superseded_by supersededBy FROM certificates c WHERE c.verify_code=?`, [code]))[0] ?? null;
+/** Certificates still in force whose expiry falls in the reminder window, with the organization's client administrators. (Used by the worker's own SQL in spirit; kept here for the API's dashboards.) */
+export const expiringWithin = (c: Conn, tenantId: string, today: string, days: number) => q(c, `SELECT ${COLS} ${FROM} WHERE c.tenant_id=? AND c.revoked_at IS NULL AND c.superseded_by IS NULL AND c.valid_until <= DATE_ADD(?, INTERVAL ? DAY) ORDER BY c.valid_until`, [tenantId, today, days]);

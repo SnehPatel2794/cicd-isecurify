@@ -1,0 +1,7 @@
+# Secret scanning rules: the defaults, plus a short allow-list for values that are deliberately fake.
+[extend]
+useDefault = true
+[allowlist]
+description = "throw-away values used only by tests and the browser run"
+paths = ['''api/test/''', '''worker/test/''', '''e2e/env\.ts''', '''docs/.*\.md''']
+regexes = ['''e2e-throwaway[\w-]*''', '''grc_test_pw''', '''test-csrf-key[\w-]*''', '''Str0ngPassword!1''']

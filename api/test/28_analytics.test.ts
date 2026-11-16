@@ -1,0 +1,57 @@
+import { test, before, after } from 'node:test'; import assert from 'node:assert/strict';
+import { freshEnv, world, frameworkFixtures, mpf, PDF } from './helpers'; import { monthsBack, sinceOf, fillSeries, ageBucket, pct, parseMonths, attention, backlogChange, AGE_BUCKETS } from '../src/modules/analytics/rules';
+let env: Awaited<ReturnType<typeof freshEnv>>; let w: Awaited<ReturnType<typeof world>>; let fx: Awaited<ReturnType<typeof frameworkFixtures>>; let team: any, aAdmin: any, bAdmin: any, vendor: any, staff: any, auditor: any, other: any, root: any; let E: string, E2: string, ITEMS: any[];
+const url = (p: string) => `/t/${w.A}${p}`; const rows = async (sql: string, p: any[] = []) => (await env.pool.query(sql, p) as any)[0] as any[]; const get = (c: any, q = '') => c.call('GET', url('/analytics' + q));
+const raise = async (c: any, itemId: string, severity: string, title: string) => (await c.call('POST', url(`/checklist/${itemId}/findings`), { title, description: 'details', severity })).body.id as string;
+before(async () => {
+  env = await freshEnv({ requireMfaForPlatform: false, evidence: { scannerEnabled: false, maxFileBytes: 1024 * 1024 } } as any); w = await world(env); root = w.root; fx = await frameworkFixtures(w.root);
+  await w.root.call('POST', `/platform/organizations/${w.A}/staff`, { userId: w.ids.team, canManage: true, canReadEvidence: true }); team = await env.login('team@x.test'); aAdmin = await w.as('aAdmin'); bAdmin = await w.as('bAdmin'); vendor = await w.as('aVendor'); staff = await w.as('aStaff'); auditor = await w.as('aAuditor'); await w.join(w.A, 'second-auditor@c.test', 'tp_auditor'); other = await env.login('second-auditor@c.test');
+  const mk = async (name: string) => (await aAdmin.call('POST', url('/engagements'), { name, primaryReleaseId: fx.X.releaseId })).body.id; E = await mk('Main'); E2 = await mk('Second'); await team.call('PUT', url(`/engagements/${E}/members/${w.ids.aAuditor}`), { role: 'auditor' });
+  ITEMS = (await aAdmin.call('GET', url(`/engagements/${E}/checklist`))).body.items;
+  await aAdmin.call('PATCH', url(`/checklist/${ITEMS[0].id}`), { accountableUserId: w.ids.aVendor, readiness: 'implemented' }); const rid = (await aAdmin.call('POST', url(`/checklist/${ITEMS[0].id}/evidence-requests`), { title: 'Policy' })).body.id; const m = mpf('p.pdf', PDF('p'), {}); const u = await vendor.call('POST', url(`/evidence-requests/${rid}/versions`), m.payload, m.headers); await auditor.call('POST', url(`/evidence-requests/${rid}/review`), { versionId: u.body.versionId, decision: 'accepted', note: 'ok' });
+  await aAdmin.call('PATCH', url(`/checklist/${ITEMS[1].id}`), { readiness: 'in_progress' }); await aAdmin.call('PATCH', url(`/checklist/${ITEMS[2].id}`), { readiness: 'not_applicable', naJustification: 'Out of scope for this site' });
+  const crit = await raise(team, ITEMS[1].id, 'critical', 'Critical one'); const low = await raise(team, ITEMS[1].id, 'low', 'Low one');   await env.pool.query("UPDATE findings SET due_date='2020-01-01' WHERE id=?", [crit]); await env.pool.query("UPDATE findings SET status='closed', closed_at=NOW(3) WHERE id=?", [low]); await env.pool.query("INSERT INTO findings(tenant_id,id,engagement_id,item_id,finding_no,title,description,severity,raised_by,created_at) SELECT tenant_id,UUID(),engagement_id,item_id,99,'Medium one','x','medium',raised_by,DATE_SUB(NOW(3),INTERVAL 100 DAY) FROM findings WHERE id=?", [crit]);
+}); after(() => env.close());
+
+test('pure rules: month windows (including year change), filling gaps, age buckets, percentages, month parsing, attention order, backlog', () => {
+  assert.deepEqual(monthsBack('2026-02-15', 4), ['2025-11', '2025-12', '2026-01', '2026-02']); assert.equal(sinceOf(monthsBack('2026-10-25', 6)), '2026-05-01'); assert.deepEqual(monthsBack('2026-10-25', 1), ['2026-10']);
+  assert.deepEqual(fillSeries(['2026-01', '2026-02', '2026-03'], ['raised', 'closed'] as const, [{ month: '2026-02', raised: 2 }, { month: '2026-02', closed: 1 }, { month: '2026-03', raised: 1 }]), [{ month: '2026-01', raised: 0, closed: 0 }, { month: '2026-02', raised: 2, closed: 1 }, { month: '2026-03', raised: 1, closed: 0 }]);
+  assert.deepEqual([0, 30, 31, 90, 91, 180, 181].map(ageBucket), ['0-30', '0-30', '31-90', '31-90', '91-180', '91-180', '180+']); assert.equal(AGE_BUCKETS.length, 4); assert.equal(pct(1, 3), 33.3); assert.equal(pct(0, 0), null); assert.equal(pct(5, 5), 100);
+  assert.deepEqual(['6', undefined, '0', '13', '1.5', 'x'].map(parseMonths), [6, 6, null, null, null, null]);
+  assert.deepEqual(attention({ overdueFindings: 1, criticalUnresolved: 2, certificatesExpiringSoon: 1, certificatesExpired: 1, overdueItems: 3 }), ['2 critical findings unresolved', '1 finding overdue', '3 checklist items overdue', '1 certificate expired', '1 certificate expiring soon']); assert.deepEqual(attention({ overdueFindings: 0, criticalUnresolved: 0, certificatesExpiringSoon: 0, certificatesExpired: 0, overdueItems: 0 }), []);
+  assert.equal(backlogChange([{ raised: 1, closed: 1 }, { raised: 5, closed: 2 }]), 3); assert.equal(backlogChange([]), 0);
+});
+test('who can see it: client admins, staff and auditors; vendors and client staff cannot; other organizations and signed-out callers cannot; bad months are refused', async () => {
+  for (const c of [aAdmin, team, auditor]) assert.equal((await get(c)).status, 200); for (const c of [vendor, staff]) assert.equal((await get(c)).status, 403); assert.equal((await get(bAdmin)).status, 404); assert.equal((await get(env.client())).status, 401); for (const q of ['?months=0', '?months=13', '?months=abc']) assert.equal((await get(aAdmin, q)).status, 400);
+  assert.equal((await get(aAdmin, '?months=12')).body.months.length, 12); assert.equal((await get(aAdmin)).body.months.length, 6);
+});
+test('readiness agrees exactly with the dashboard and the checklist (same evaluator); per-engagement rows and phases are listed', async () => {
+  const r = (await get(aAdmin)).body; const dash = (await aAdmin.call('GET', url('/dashboard'))).body; assert.deepEqual(r.readiness.summary, dash.summary); assert.deepEqual([r.engagements.total, r.engagements.active, r.engagements.closed], [2, 2, 0]);
+  const main = r.engagements.perEngagement.find((e: any) => e.id === E); assert.equal(main.effective, dash.perEngagement.find((e: any) => e.id === E).summary.effective); assert.equal(main.phase, 1); assert.equal(r.engagements.byPhase[0].count, 2); assert.equal(r.engagements.byPhase.length, 5);
+  const fx1 = r.readiness.frameworks.find((f: any) => f.name === 'Fixture X'); assert.ok(fx1); assert.equal(fx1.effective, 1); assert.equal(fx1.applicable, fx1.readinessPercent === null ? 0 : fx1.applicable); assert.ok(fx1.applicable >= 3 + 3 - 1 - 1, 'applicable counts both engagements, without not-applicable items'); assert.equal(r.readiness.frameworksSampled, false);
+});
+test('findings: counts by severity and status, unresolved by severity, overdue and its buckets, age buckets, average days to close, month series', async () => {
+  const f = (await get(aAdmin)).body.findings; assert.equal(f.total, 3); assert.equal(f.unresolved, 2); assert.equal(f.blocking, 2); assert.deepEqual(f.bySeverity, { critical: 1, high: 0, medium: 1, low: 1, observation: 0 }); assert.deepEqual(f.unresolvedBySeverity, { critical: 1, high: 0, medium: 1, low: 0, observation: 0 }); assert.equal(f.byStatus.closed, 1);
+  assert.equal(f.overdue, 1); assert.equal(f.overdueBuckets['90+'], 1); assert.deepEqual(f.ageBuckets, { '0-30': 1, '31-90': 0, '91-180': 1, '180+': 0 }); assert.equal(f.avgDaysToClose, 0);
+  const cur = f.series[f.series.length - 1]; assert.equal(f.series.length, 6); assert.equal(cur.closed, 1); assert.ok(cur.raised >= 2, 'created this month'); assert.equal(f.series.reduce((n: number, s: any) => n + s.raised, 0), 3); assert.equal(f.backlogChange, cur.raised - cur.closed);
+});
+test('evidence: statuses, review outcomes by month, rejection rate, and what expires soon', async () => {
+  let e = (await get(aAdmin)).body.evidence; assert.equal(e.byStatus.accepted, 1); assert.equal(e.series.at(-1).accepted, 1); assert.equal(e.rejectionRate, 0); assert.deepEqual([e.expiring30, e.expiring60, e.expired], [0, 0, 0]);
+  await env.pool.query("UPDATE evidence_requests SET valid_until=DATE_ADD(CURDATE(), INTERVAL 20 DAY) WHERE status='accepted'"); e = (await get(aAdmin)).body.evidence; assert.deepEqual([e.expiring30, e.expiring60, e.expired], [1, 1, 0]);
+  await env.pool.query("UPDATE evidence_requests SET valid_until=DATE_ADD(CURDATE(), INTERVAL 45 DAY) WHERE status='accepted'"); e = (await get(aAdmin)).body.evidence; assert.deepEqual([e.expiring30, e.expiring60], [0, 1]);
+  await env.pool.query("UPDATE evidence_requests SET valid_until=DATE_SUB(CURDATE(), INTERVAL 1 DAY) WHERE status='accepted'"); e = (await get(aAdmin)).body.evidence; assert.deepEqual([e.expiring30, e.expiring60, e.expired], [0, 0, 1]);
+});
+test('auditors see only their engagements; staff and client admins see all; certificates are summarised', async () => {
+  const a1 = (await get(auditor)).body; assert.deepEqual(a1.engagements.perEngagement.map((e: any) => e.id), [E]); assert.equal(a1.scope, 'auditor'); assert.equal(a1.findings.total, 3); const none = (await get(other)).body; assert.equal(none.engagements.total, 0); assert.equal(none.findings.total, 0); assert.equal(none.readiness.summary.total, 0); assert.deepEqual(none.evidence.byStatus, { requested: 0, submitted: 0, accepted: 0, rejected: 0, cancelled: 0 });
+  assert.equal((await get(team)).body.engagements.total, 2); assert.deepEqual((await get(aAdmin)).body.certificates, { valid: 0, expiringSoon: 0, expired: 0, revoked: 0, superseded: 0 });
+});
+test('cross-organization view: staff see only organizations they are assigned to, sorted by what needs attention first; clients are refused; other organizations never leak', async () => {
+  const r = await team.call('GET', '/platform/analytics'); assert.equal(r.status, 200); const orgs = r.body.organizations; assert.deepEqual(orgs.map((o: any) => o.id), [w.A]); const o = orgs[0];
+  assert.deepEqual([o.activeEngagements, o.unresolvedFindings, o.criticalUnresolved, o.overdueFindings], [2, 2, 1, 1]); assert.deepEqual(o.attention.slice(0, 2), ['1 critical finding unresolved', '1 finding overdue']); assert.equal(r.body.totals.needAttention, 1); assert.equal(r.body.totals.organizations, 1);
+  assert.equal(o.readinessPercent, (await get(aAdmin)).body.readiness.summary.readinessPercent); assert.ok(!JSON.stringify(r.body).includes(w.B));
+  for (const c of [aAdmin, vendor, auditor]) assert.equal((await c.call('GET', '/platform/analytics')).status, 403); assert.equal((await env.client().call('GET', '/platform/analytics')).status, 401);
+  await env.pool.query("UPDATE organizations SET status='suspended' WHERE id=?", [w.A]); const s = (await team.call('GET', '/platform/analytics')).body.organizations[0]; assert.deepEqual([s.status, s.activeEngagements, s.attention], ['suspended', 0, []]); await env.pool.query("UPDATE organizations SET status='active' WHERE id=?", [w.A]);
+});
+test('analytics never writes: no audit entries, no rows changed', async () => {
+  const c = async () => JSON.stringify([(await rows('SELECT COUNT(*) n FROM audit_events'))[0].n, (await rows('SELECT COUNT(*) n FROM findings'))[0].n, (await rows('SELECT COUNT(*) n FROM notifications'))[0].n]); const before = await c(); await get(aAdmin); await get(team, '?months=12'); await team.call('GET', '/platform/analytics'); assert.equal(await c(), before);
+});

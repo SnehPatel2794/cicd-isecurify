@@ -1,0 +1,8 @@
+// Integrations (Phase 11B): small pure helpers for the page.
+export const EVENT_CHOICES: [string, string][] = [['*', 'Everything that can be sent'], ['finding.*', 'Findings (raised, updated, closed)'], ['evidence.*', 'Evidence (uploaded, accepted, rejected)'], ['risk.*', 'Risks'], ['control_test.*', 'Control tests'], ['checklist.*', 'Checklist items'], ['engagement.*', 'Engagements'], ['policy.*', 'Policies'], ['incident.*', 'Incidents'], ['vendor.*', 'Vendors']];
+export const KEY_STATE: Record<string, { label: string; tone: 'green' | 'amber' | 'red' | 'slate' }> = { active: { label: 'Active', tone: 'green' }, expired: { label: 'Expired', tone: 'amber' }, revoked: { label: 'Revoked', tone: 'slate' } };
+export const DELIVERY_STATE: Record<string, { label: string; tone: 'green' | 'amber' | 'red' }> = { delivered: { label: 'Delivered', tone: 'green' }, pending: { label: 'Waiting / retrying', tone: 'amber' }, dead: { label: 'Failed', tone: 'red' } };
+export const endpointState = (e: { active: boolean; disabledReason?: string | null; consecutiveFailures: number }) => !e.active ? { label: e.disabledReason ? 'Switched off' : 'Paused', tone: 'red' as const } : e.consecutiveFailures > 0 ? { label: `Failing (${e.consecutiveFailures})`, tone: 'amber' as const } : { label: 'Working', tone: 'green' as const };
+export const verifySnippet = `const [t, v1] = header.split(',').map(p => p.split('=')[1]);
+const expected = crypto.createHmac('sha256', secret).update(t + '.' + rawBody).digest('hex');
+const ok = crypto.timingSafeEqual(Buffer.from(v1), Buffer.from(expected)) && Math.abs(Date.now()/1000 - Number(t)) < 300;`;

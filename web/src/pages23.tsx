@@ -1,0 +1,56 @@
+// Integrations (Phase 11B): scoped API keys and signed webhooks. Managers only.
+import { FormEvent, useState } from 'react'; import { useParams } from 'react-router-dom'; import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { api } from './api'; import { useAuth } from './auth'; import { Empty, ErrorBox, Field, Spinner } from './ui'; import { Badge, Modal, useDo, msg } from './kit';
+import { EVENT_CHOICES, KEY_STATE, DELIVERY_STATE, endpointState, verifySnippet } from './integrationsUi';
+const TABS = ['API keys', 'Webhooks'] as const;
+export function IntegrationsPage() {
+  const { tid } = useParams(); const { me } = useAuth(); const org = me?.organizations.find(o => o.id === tid); const [tab, setTab] = useState<typeof TABS[number]>('API keys');
+  if (!org) return <ErrorBox message="You do not have access to this organization." />; if (!(org.role === 'client_admin' || org.via === 'staff')) return <ErrorBox message="Only organization administrators can manage integrations." />;
+  return (<div className="grid gap-4"><div><h1 className="text-xl font-semibold">Integrations</h1><p className="text-sm text-slate-500">{org.name}: connect scanners, ticketing and SIEM tools. API keys let other systems read and write; webhooks tell them when something changes.</p></div>
+    <div className="flex gap-2" role="tablist">{TABS.map(t => <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)} className={`rounded px-3 py-1 text-sm ${tab === t ? 'bg-brand text-white' : 'border bg-white'}`}>{t}</button>)}</div>
+    {tab === 'API keys' ? <KeysTab tid={tid!} /> : <HooksTab tid={tid!} />}</div>);
+}
+function Secret({ label, value, onClose }: { label: string; value: string; onClose: () => void }) {
+  return (<Modal title={label} onClose={onClose}><p className="mb-2 text-sm">Copy this now. For your security it is shown only once and cannot be shown again.</p><input className="input font-mono text-xs" readOnly value={value} aria-label={label} onFocus={e => e.currentTarget.select()} /><div className="mt-3 flex gap-2"><button className="btn" onClick={() => navigator.clipboard?.writeText(value)}>Copy</button><button className="btn-secondary" onClick={onClose}>I have saved it</button></div></Modal>);
+}
+function KeysTab({ tid }: { tid: string }) {
+  const qc = useQueryClient(); const [add, setAdd] = useState(false); const [shown, setShown] = useState(''); const a = useDo();
+  const q = useQuery({ queryKey: ['api-keys', tid], queryFn: () => api<any>('GET', `/t/${tid}/api-keys`) }); const sc = useQuery({ queryKey: ['integration-scopes', tid], queryFn: () => api<any>('GET', `/t/${tid}/integrations/scopes`) });
+  const revoke = (k: any) => { if (confirm(`Revoke "${k.name}"? Anything using it stops working immediately.`)) a.run(async () => { await api('DELETE', `/t/${tid}/api-keys/${k.id}`); qc.invalidateQueries({ queryKey: ['api-keys', tid] }); }); };
+  return (<div className="card"><div className="mb-2 flex items-center justify-between"><h2 className="font-medium">API keys</h2><button className="btn" onClick={() => setAdd(true)}>Create API key</button></div>{a.err && <ErrorBox message={a.err} />}
+    {q.isLoading ? <Spinner /> : q.isError ? <ErrorBox message={msg(q.error)} /> : !q.data.keys.length ? <Empty>No API keys yet.</Empty> :
+      <table className="w-full text-sm"><thead><tr className="text-left text-xs text-slate-500"><th>Name</th><th>Access</th><th>Last used</th><th>Status</th><th /></tr></thead><tbody>{q.data.keys.map((k: any) => <tr key={k.id} className="border-t"><td className="py-2">{k.name}<div className="font-mono text-xs text-slate-500">isg_{k.prefix}…</div></td><td className="text-xs">{k.scopes.join(', ')}</td><td className="text-xs">{k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : 'Never'}</td><td><Badge tone={KEY_STATE[k.state].tone}>{KEY_STATE[k.state].label}</Badge></td><td>{k.state === 'active' && <button className="btn-secondary" onClick={() => revoke(k)}>Revoke</button>}</td></tr>)}</tbody></table>}
+    {add && sc.data && <KeyDialog tid={tid} scopes={sc.data.scopes} onClose={() => setAdd(false)} onDone={(key: string) => { setAdd(false); setShown(key); qc.invalidateQueries({ queryKey: ['api-keys', tid] }); }} />}{shown && <Secret label="Your new API key" value={shown} onClose={() => setShown('')} />}</div>);
+}
+function KeyDialog({ tid, scopes, onClose, onDone }: any) {
+  const a = useDo(); const [name, setName] = useState(''); const [picked, setPicked] = useState<string[]>([]); const [days, setDays] = useState('90');
+  const submit = (e: FormEvent) => { e.preventDefault(); a.run(async () => { const r = await api<any>('POST', `/t/${tid}/api-keys`, { name: name.trim(), scopes: picked, expiresInDays: days ? Number(days) : null }); onDone(r.key); }); };
+  return (<Modal title="Create API key" onClose={onClose}><form onSubmit={submit}>{a.err && <ErrorBox message={a.err} />}<Field label="Name (what will use it)" value={name} onChange={e => setName(e.target.value)} required maxLength={120} />
+    <fieldset className="my-2 text-sm"><legend className="font-medium">What it may do</legend>{scopes.map((s: any) => <label key={s.id} className="block"><input type="checkbox" checked={picked.includes(s.id)} onChange={e => setPicked(e.target.checked ? [...picked, s.id] : picked.filter(x => x !== s.id))} /> {s.label}</label>)}</fieldset>
+    <Field label="Expires after (days, empty for never)" type="number" min={1} max={730} value={days} onChange={e => setDays(e.target.value)} /><p className="mb-2 text-xs text-slate-500">Actions taken with a key are recorded under your name. Give it only what it needs.</p><button className="btn" disabled={a.busy || !name.trim() || !picked.length}>Create key</button></form></Modal>);
+}
+function HooksTab({ tid }: { tid: string }) {
+  const qc = useQueryClient(); const [add, setAdd] = useState(false); const [shown, setShown] = useState(''); const [open, setOpen] = useState<any>(null); const a = useDo();
+  const q = useQuery({ queryKey: ['webhooks', tid], queryFn: () => api<any>('GET', `/t/${tid}/webhooks`) }); const refresh = () => qc.invalidateQueries({ queryKey: ['webhooks', tid] });
+  const act = (fn: () => Promise<unknown>) => a.run(async () => { await fn(); refresh(); });
+  if (q.isLoading) return <Spinner />; if (q.isError) return <ErrorBox message={msg(q.error)} />;
+  return (<div className="card"><div className="mb-2 flex items-center justify-between"><h2 className="font-medium">Webhooks</h2>{q.data.configured && <button className="btn" onClick={() => setAdd(true)}>Add webhook</button>}</div>{a.err && <ErrorBox message={a.err} />}
+    {!q.data.configured ? <Empty>Webhooks are switched off on this installation. The server administrator needs to set WEBHOOK_ENC_KEY (see the deployment notes).</Empty> : !q.data.endpoints.length ? <Empty>No webhooks yet.</Empty> :
+      <ul className="text-sm">{q.data.endpoints.map((e: any) => { const s = endpointState(e); return <li key={e.id} className="border-t py-2"><div className="flex flex-wrap items-center gap-2"><strong>{e.name}</strong><Badge tone={s.tone}>{s.label}</Badge><span className="text-xs text-slate-500">{e.url}</span></div><p className="text-xs text-slate-500">Sends: {e.events.join(', ')}{e.disabledReason ? ` · ${e.disabledReason}` : ''}</p>
+        <div className="mt-1 flex flex-wrap gap-2"><button className="btn-secondary" onClick={() => setOpen(e)}>Deliveries</button><button className="btn-secondary" onClick={() => act(() => api('POST', `/t/${tid}/webhooks/${e.id}/test`, {}))}>Send test</button><button className="btn-secondary" onClick={() => act(() => api('PATCH', `/t/${tid}/webhooks/${e.id}`, { active: !e.active }))}>{e.active ? 'Pause' : 'Turn on'}</button>
+          <button className="btn-secondary" onClick={() => { if (confirm('Rotate the signing secret? The old one stops working immediately.')) a.run(async () => { const r = await api<any>('POST', `/t/${tid}/webhooks/${e.id}/rotate-secret`, {}); setShown(r.secret); }); }}>Rotate secret</button><button className="btn-secondary" onClick={() => { if (confirm(`Delete "${e.name}"?`)) act(() => api('DELETE', `/t/${tid}/webhooks/${e.id}`)); }}>Delete</button></div></li>; })}</ul>}
+    {q.data.configured && <details className="mt-3 text-xs"><summary className="cursor-pointer">How to check a signature</summary><pre className="mt-1 overflow-auto rounded bg-slate-50 p-2">{verifySnippet}</pre></details>}
+    {add && <HookDialog tid={tid} onClose={() => setAdd(false)} onDone={(secret: string) => { setAdd(false); setShown(secret); refresh(); }} />}{shown && <Secret label="Signing secret" value={shown} onClose={() => setShown('')} />}{open && <Deliveries tid={tid} ep={open} onClose={() => setOpen(null)} />}</div>);
+}
+function HookDialog({ tid, onClose, onDone }: any) {
+  const a = useDo(); const [f, setF] = useState({ name: '', url: '' }); const [ev, setEv] = useState<string[]>(['*']);
+  const submit = (e: FormEvent) => { e.preventDefault(); a.run(async () => { const r = await api<any>('POST', `/t/${tid}/webhooks`, { name: f.name.trim(), url: f.url.trim(), events: ev }); onDone(r.secret); }); };
+  return (<Modal title="Add webhook" onClose={onClose}><form onSubmit={submit}>{a.err && <ErrorBox message={a.err} />}<Field label="Name" value={f.name} onChange={e => setF({ ...f, name: e.target.value })} required maxLength={120} /><Field label="Address (https only)" type="url" value={f.url} onChange={e => setF({ ...f, url: e.target.value })} required placeholder="https://" />
+    <fieldset className="my-2 text-sm"><legend className="font-medium">What to send</legend>{EVENT_CHOICES.map(([id, label]) => <label key={id} className="block"><input type="checkbox" checked={ev.includes(id)} onChange={e => setEv(e.target.checked ? [...ev, id] : ev.filter(x => x !== id))} /> {label}</label>)}</fieldset><p className="mb-2 text-xs text-slate-500">Sign-in, user, key and other security events are never sent.</p><button className="btn" disabled={a.busy || !f.name.trim() || !f.url.trim() || !ev.length}>Add webhook</button></form></Modal>);
+}
+function Deliveries({ tid, ep, onClose }: any) {
+  const a = useDo(); const qc = useQueryClient(); const q = useQuery({ queryKey: ['webhook-deliveries', tid, ep.id], queryFn: () => api<any>('GET', `/t/${tid}/webhooks/${ep.id}/deliveries`) });
+  const retry = (d: any) => a.run(async () => { await api('POST', `/t/${tid}/webhooks/${ep.id}/deliveries/${d.id}/retry`, {}); qc.invalidateQueries({ queryKey: ['webhook-deliveries', tid, ep.id] }); });
+  return (<Modal title={`Deliveries: ${ep.name}`} onClose={onClose} wide>{a.err && <ErrorBox message={a.err} />}{q.isLoading ? <Spinner /> : q.isError ? <ErrorBox message={msg(q.error)} /> : !q.data.deliveries.length ? <Empty>Nothing sent yet.</Empty> :
+    <ul className="text-sm">{q.data.deliveries.map((d: any) => <li key={d.id} className="flex flex-wrap items-center gap-2 border-t py-2"><Badge tone={DELIVERY_STATE[d.status].tone}>{DELIVERY_STATE[d.status].label}</Badge><span>{d.eventType}</span><span className="text-xs text-slate-500">{new Date(d.createdAt).toLocaleString()} · {d.attempts} {d.attempts === 1 ? 'try' : 'tries'}{d.lastError ? ` · ${d.lastError}` : ''}</span>{d.status === 'dead' && <button className="btn-secondary" onClick={() => retry(d)}>Try again</button>}</li>)}</ul>}</Modal>);
+}

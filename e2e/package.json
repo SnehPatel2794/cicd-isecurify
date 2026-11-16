@@ -1,0 +1,12 @@
+{
+  "name": "isecurify-grc-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser end-to-end run of the main journey (Playwright). See ../docs/E2E.md",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.0"
+  }
+}
