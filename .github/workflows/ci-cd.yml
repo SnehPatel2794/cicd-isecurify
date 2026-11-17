@@ -21,6 +21,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install PDF tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
+
       - name: Start MySQL
         run: |
           docker run -d --name mysql --network host \
@@ -33,6 +36,10 @@ jobs:
           echo "MySQL did not start"
           docker logs mysql
           exit 1
+
+      - name: API tests
+        timeout-minutes: 15
+        run: cd api && npm test
 
       - uses: actions/setup-node@v4
         with:
