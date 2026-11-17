@@ -38,10 +38,15 @@ jobs:
           cache: npm
           cache-dependency-path: "*/package-lock.json"
 
-      - name: Install and typecheck
+      - name: Install dependencies
         run: |
           for d in api worker web; do
-            (cd $d && npm ci && npm run typecheck)
+            (cd $d && npm ci)
+          done
+      - name: Typechcek
+        run: |
+          for d in api worker web; do
+            (cd $d && npm run typecheck)
           done
 
       - name: API tests
