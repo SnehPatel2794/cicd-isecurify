@@ -16,21 +16,23 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: root
-        ports: ["3306:3306"]
-        options: >-
-          --health-cmd="mysqladmin ping -proot"
-          --health-interval=5s
-          --health-timeout=5s
-          --health-retries=20
     env:
       TEST_ADMIN_URL: "mysql://root:root@127.0.0.1:3306/"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start MySQL
+        run: |
+          docker run -d --name mysql --network host \
+            -e MYSQL_ROOT_PASSWORD=root \
+            mysql:8.0 --log-bin-trust-function-creators=1
+          for i in $(seq 1 60); do
+            docker exec mysql mysqladmin ping -h 127.0.0.1 -uroot -proot --silent && exit 0
+            sleep 2
+          done
+          echo "MySQL did not start"
+          docker logs mysql
+          exit 1
 
       - uses: actions/setup-node@v4
         with:
@@ -43,19 +45,23 @@ jobs:
           for d in api worker web; do
             (cd $d && npm ci)
           done
-      - name: Typechcek
+
+      - name: Typecheck
         run: |
           for d in api worker web; do
             (cd $d && npm run typecheck)
           done
 
       - name: API tests
+        timeout-minutes: 8
         run: cd api && npm test
 
       - name: Worker tests
+        timeout-minutes: 8
         run: cd worker && npm test
 
       - name: Web tests and build
+        timeout-minutes: 8
         run: cd web && npm test && npm run build
 
   build-and-push:
@@ -87,7 +93,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: snehpatel2794/grc-${{ matrix.name }}
+          images: sneh2794/grc-${{ matrix.name }}
           tags: |
             type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
