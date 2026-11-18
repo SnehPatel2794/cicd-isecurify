@@ -92,9 +92,11 @@ jobs:
           export CSRF_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
           docker compose config --quiet
           docker run --rm \
+            -e DOMAIN="$DOMAIN" \
             -v "$PWD/web/Caddyfile:/etc/caddy/Caddyfile:ro" \
             caddy:2-alpine \
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
 
       - uses: docker/setup-buildx-action@v3
 
