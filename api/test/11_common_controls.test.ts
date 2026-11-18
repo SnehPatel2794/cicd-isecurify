@@ -1,5 +1,8 @@
 import { test, before, after } from 'node:test'; import assert from 'node:assert/strict'; import mysql from 'mysql2/promise';
-import { freshEnv, world, newFramework } from './helpers'; import { seedSample, SAMPLE_NAME } from '../src/modules/frameworks/sample'; import { applyGrants } from '../src/grants';
+import { freshEnv, world, newFramework, ADMIN_URL } from './helpers'; import { seedSample, SAMPLE_NAME } from '../src/modules/frameworks/sample'; import { applyGrants } from '../src/grants';
+const testDbUrl = new URL(ADMIN_URL);
+const TEST_DB_HOST = testDbUrl.hostname;
+const TEST_DB_PORT = Number(testDbUrl.port || 3306);
 let env: Awaited<ReturnType<typeof freshEnv>>; let w: Awaited<ReturnType<typeof world>>; let team: any; let A: any, B: any; let ctl: Record<string, string>;
 before(async () => {
   env = await freshEnv({ requireMfaForPlatform: false }); w = await world(env); team = await env.login('team@x.test');
@@ -58,8 +61,20 @@ test('sample seed: fictional framework + 5 common controls, published and immuta
   await assert.rejects(env.pool.query("UPDATE framework_controls SET title='x' WHERE release_id=?", [f.latestPublishedReleaseId]), /immutable/);
 });
 test('app DB account cannot rewrite mapping history or touch published releases at privilege level', async () => {
-  const au = 'a' + env.name.slice(-8), wu = 'w' + env.name.slice(-8); await applyGrants(env.pool, env.name, au, 'app-pw-123', wu, 'worker-pw-123', '127.0.0.1');
-  const app = await mysql.createConnection({ host: '127.0.0.1', user: au, password: 'app-pw-123', database: env.name });
+  const au = 'a' + env.name.slice(-8), wu = 'w' + env.name.slice(-8); await applyGrants(env.pool, env.name, au, 'app-pw-123', wu, 'worker-pw-123', '%');
+
+const app = await mysql.createConnection({
+  host: TEST_DB_HOST,
+  port: TEST_DB_PORT,
+  user: au,
+  password: 'app-pw-123',
+  database: env.name
+});
   try { await assert.rejects(app.query("UPDATE control_mapping_history SET action='map'"), /denied/i); await assert.rejects(app.query('DELETE FROM control_mapping_history'), /denied/i); await assert.rejects(app.query("UPDATE framework_controls SET title='x' WHERE release_id=?", [A.releaseId]), /immutable/); await app.query('SELECT COUNT(*) FROM framework_controls'); }
-  finally { await app.end(); for (const u of [au, wu]) await env.pool.query('DROP USER IF EXISTS ?@?', [u, '127.0.0.1']); }
+  finally {
+  await app.end();
+  for (const u of [au, wu]) {
+    await env.pool.query('DROP USER IF EXISTS ?@?', [u, '%']);
+  }
+}
 });

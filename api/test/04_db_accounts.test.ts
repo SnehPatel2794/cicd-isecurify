@@ -1,12 +1,15 @@
 import { test, before, after } from 'node:test'; import assert from 'node:assert/strict'; import mysql from 'mysql2/promise';
 import { freshEnv, ADMIN_URL } from './helpers'; import { applyGrants } from '../src/grants';
+const testDbUrl = new URL(ADMIN_URL);
+const TEST_DB_HOST = testDbUrl.hostname;
+const TEST_DB_PORT = Number(testDbUrl.port || 3306);
 let env: Awaited<ReturnType<typeof freshEnv>>; let app: mysql.Connection, worker: mysql.Connection; let au: string, wu: string;
 before(async () => {
   env = await freshEnv(); au = 'a' + env.name.slice(-8); wu = 'w' + env.name.slice(-8);
-  await applyGrants(env.pool, env.name, au, 'app-pw-123', wu, 'worker-pw-123', '127.0.0.1');
-  app = await mysql.createConnection({ host: '127.0.0.1', user: au, password: 'app-pw-123', database: env.name }); worker = await mysql.createConnection({ host: '127.0.0.1', user: wu, password: 'worker-pw-123', database: env.name });
+  await applyGrants(env.pool, env.name, au, 'app-pw-123', wu, 'worker-pw-123', '%');
+  app = await mysql.createConnection({ host: TEST_DB_HOST , port: TEST_DB_PORT , user: au, password: 'app-pw-123', database: env.name }); worker = await mysql.createConnection({ host: TEST_DB_HOST , port: TEST_DB_PORT , user: wu, password: 'worker-pw-123', database: env.name });
 });
-after(async () => { await app.end(); await worker.end(); for (const u of [au, wu]) await env.pool.query('DROP USER IF EXISTS ?@?', [u, '127.0.0.1']); await env.close(); });
+after(async () => { await app.end(); await worker.end(); for (const u of [au, wu]) await env.pool.query('DROP USER IF EXISTS ?@?', [u, '%']); await env.close(); });
 
 test('app account can read and write business tables', async () => { await app.query("INSERT INTO users(id,email,name) VALUES (UUID(),'a@b.test','A')"); assert.equal(((await app.query('SELECT COUNT(*) n FROM users'))[0] as any)[0].n, 1); });
 test('app account can INSERT but not UPDATE or DELETE audit_events (privilege level)', async () => {
@@ -30,7 +33,7 @@ test('app account can read and write the new tenancy tables, worker cannot write
   await app.query("INSERT INTO organizations(id,name) VALUES ('o1','Org')"); await app.query("INSERT INTO memberships(tenant_id,user_id,role) VALUES ('o1','u9','client_admin')");
   await assert.rejects(worker.query("INSERT INTO memberships(tenant_id,user_id,role) VALUES ('o1','u9','client_staff')"), /denied/i);
 });
-test('grants can be re-applied (idempotent)', async () => { await applyGrants(env.pool, env.name, au, 'app-pw-123', wu, 'worker-pw-123', '127.0.0.1'); await app.query('SELECT 1'); });
+test('grants can be re-applied (idempotent)', async () => { await applyGrants(env.pool, env.name, au, 'app-pw-123', wu, 'worker-pw-123', '%'); await app.query('SELECT 1'); });
 test('evidence versions, reviews and scans are insert-only for the app account; the worker may add scan results; templates are never deleted', async () => {
   for (const t of ['evidence_versions', 'evidence_reviews', 'evidence_scans']) { await assert.rejects(app.query(`UPDATE ${t} SET tenant_id=tenant_id`), /denied/i); await assert.rejects(app.query(`DELETE FROM ${t}`), /denied/i); }
   await assert.rejects(app.query('DELETE FROM evidence_templates'), /denied/i); await assert.rejects(worker.query('UPDATE evidence_templates SET active=0'), /denied/i);
@@ -96,21 +99,21 @@ test('evidence archive: never deleted; the app may restore (update), the worker 
   await app.query('SELECT COUNT(*) FROM evidence_archive'); await worker.query('SELECT COUNT(*) FROM evidence_archive');
 });
 test('migrator account: can change this database and grant the app/worker rights, but nothing outside it', async () => {
-  const { applyMigratorGrants } = await import('../src/grants'); const mu = 'm' + env.name.slice(-8); await applyMigratorGrants(env.pool, env.name, mu, 'migr-pw-123', '127.0.0.1');
-  const mig = await mysql.createConnection({ host: '127.0.0.1', user: mu, password: 'migr-pw-123', database: env.name });
+  const { applyMigratorGrants } = await import('../src/grants'); const mu = 'm' + env.name.slice(-8); await applyMigratorGrants(env.pool, env.name, mu, 'migr-pw-123', '%');
+  const mig = await mysql.createConnection({ host: TEST_DB_HOST , port: TEST_DB_PORT , user: mu, password: 'migr-pw-123', database: env.name });
   try {
     await mig.query('CREATE TABLE zz_probe (id INT PRIMARY KEY)'); await mig.query('ALTER TABLE zz_probe ADD COLUMN x INT'); await mig.query('DROP TABLE zz_probe');
-    const a2 = 'b' + env.name.slice(-8), w2 = 'x' + env.name.slice(-8); await applyGrants(mig as any, env.name, a2, 'app2-pw-123', w2, 'worker2-pw-123', '127.0.0.1');   // the same grants run as the migrator
-    const app2 = await mysql.createConnection({ host: '127.0.0.1', user: a2, password: 'app2-pw-123', database: env.name }); try { await app2.query('SELECT COUNT(*) FROM users'); await assert.rejects(app2.query('DELETE FROM audit_events'), /denied/i); } finally { await app2.end(); }
-    for (const u of [a2, w2]) await env.pool.query('DROP USER IF EXISTS ?@?', [u, '127.0.0.1']);
+    const a2 = 'b' + env.name.slice(-8), w2 = 'x' + env.name.slice(-8); await applyGrants(mig as any, env.name, a2, 'app2-pw-123', w2, 'worker2-pw-123', '%');   // the same grants run as the migrator
+    const app2 = await mysql.createConnection({ host: TEST_DB_HOST , port: TEST_DB_PORT , user: a2, password: 'app2-pw-123', database: env.name }); try { await app2.query('SELECT COUNT(*) FROM users'); await assert.rejects(app2.query('DELETE FROM audit_events'), /denied/i); } finally { await app2.end(); }
+    for (const u of [a2, w2]) await env.pool.query('DROP USER IF EXISTS ?@?', [u, '%']);
     await assert.rejects(mig.query('SELECT user FROM mysql.user'), /denied/i); await assert.rejects(mig.query('CREATE DATABASE zz_other'), /denied/i); await assert.rejects(mig.query('CREATE TABLE mysql.zz (id INT)'), /denied/i);
     await assert.rejects(mig.query('SET GLOBAL max_connections=5'), /denied|privilege|SUPER/i); await assert.rejects(mig.query("SELECT LOAD_FILE('/etc/passwd')").then(r => { if ((r[0] as any)[0][Object.keys((r[0] as any)[0])[0]] !== null) throw new Error('file read worked'); throw new Error('denied: no file'); }), /denied/i);
-  } finally { await mig.end(); await env.pool.query('DROP USER IF EXISTS ?@?', [mu, '127.0.0.1']); }
+  } finally { await mig.end(); await env.pool.query('DROP USER IF EXISTS ?@?', [mu, '%']); }
 });
 
 test('the optional purge account can only read and delete tenant rows; the delete triggers still protect a real organization', async () => {
   const pu = 'p' + env.name.slice(-8); const { applyPurgeGrants } = await import('../src/grants'); const [tb] = await env.pool.query("SELECT table_name t FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'", [env.name]) as any;
-  await applyPurgeGrants(env.pool, env.name, pu, 'purge-pw-123', '127.0.0.1', tb.map((r: any) => r.t ?? r.TABLE_NAME)); const pc = await mysql.createConnection({ host: '127.0.0.1', user: pu, password: 'purge-pw-123', database: env.name });
+  await applyPurgeGrants(env.pool, env.name, pu, 'purge-pw-123', '%', tb.map((r: any) => r.t ?? r.TABLE_NAME)); const pc = await mysql.createConnection({ host: TEST_DB_HOST , port: TEST_DB_PORT , user: pu, password: 'purge-pw-123', database: env.name });
   try {
     await app.query("INSERT INTO organizations(id,name,created_by) VALUES ('real1','Real','u9'),('demo1','Demo','u9')").catch(async () => { await app.query("INSERT INTO organizations(id,name) VALUES ('real1','Real'),('demo1','Demo')"); }); await env.pool.query("UPDATE organizations SET is_demo=0 WHERE id='real1'"); 
     await assert.rejects(pc.query("INSERT INTO tasks(tenant_id,id,engagement_id,task_no,title,created_by) VALUES ('real1','t','e',1,'x','u')"), /denied/i, 'cannot add tenant rows');
@@ -119,5 +122,5 @@ test('the optional purge account can only read and delete tenant rows; the delet
     await app.query("INSERT INTO audit_events(tenant_id,action) VALUES ('real1','t')"); await assert.rejects(pc.query("DELETE FROM audit_events WHERE tenant_id='real1'"), /append-only/, 'privileged, but the trigger refuses for a real organization');
     await assert.rejects(pc.query("UPDATE organizations SET purge_started_at=NOW(3) WHERE id='real1'"), /only a demo organization/); await assert.rejects(pc.query("DELETE FROM organizations WHERE id='real1'"), /being wiped/);
     await assert.rejects(app.query("DELETE FROM audit_events WHERE tenant_id='real1'"), /denied/i, 'the application account still cannot delete');
-  } finally { await pc.end(); await env.pool.query('DROP USER IF EXISTS ?@?', [pu, '127.0.0.1']); }
+  } finally { await pc.end(); await env.pool.query('DROP USER IF EXISTS ?@?', [pu, '%']); }
 });

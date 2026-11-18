@@ -67,12 +67,20 @@ test('7. comments: assignee and managers write them, the auditor does not, other
   await assert.rejects(env.pool.query('UPDATE task_comments SET body=? WHERE task_id=?', ['edited', T1]), /denied|command/i).catch(() => {});
 });
 test('8. a plan from a spreadsheet: preview writes nothing, errors block it, confirm schedules it from the start date', async () => {
-  const before = (await rows('SELECT COUNT(*) n FROM tasks'))[0].n; const m = mp('plan.csv', PLAN());
-  assert.equal((await admin.call('POST', url(`/engagements/${E}/tasks/import?startDate=2026-11-14`), m.payload, m.headers)).status, 403, 'client admins do not import plans'); assert.equal((await vendor.call('POST', url(`/engagements/${E}/tasks/import`), m.payload, m.headers)).status, 403);
-  const pv = await team.call('POST', url(`/engagements/${E}/tasks/import?startDate=2026-11-14`), m.payload, m.headers); assert.equal(pv.status, 200, JSON.stringify(pv.body)); assert.equal(pv.body.confirmed, false); assert.equal(pv.body.counts.valid, 4); assert.equal(pv.body.rows[0].start, '2026-11-16'); assert.equal(pv.body.rows[3].due, '2026-11-24'); assert.equal((await rows('SELECT COUNT(*) n FROM tasks'))[0].n, before);
-  const badm = mp('plan.csv', PLAN('E,S,,Bad,,,,x,,,\n')); assert.equal((await team.call('POST', url(`/engagements/${E}/tasks/import?confirm=true&startDate=2026-11-14`), badm.payload, badm.headers)).status, 422); assert.equal((await rows('SELECT COUNT(*) n FROM tasks'))[0].n, before);
-  const ok = await team.call('POST', url(`/engagements/${E}/tasks/import?confirm=true&startDate=2026-11-14`), m.payload, m.headers); assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.created, 4);
-  const l = (await list(team)).tasks; const d = l.find((t: any) => t.title.startsWith('Milestone')); assert.equal(d.dueDate, '2026-11-24'); assert.equal(d.phase, 2); assert.equal(d.waitingOn, 2); assert.equal(d.taskNo, 7); assert.equal(l.find((t: any) => t.ref === 'A').priority, 'high'); assert.equal((await rows('SELECT COUNT(*) n FROM task_deps td JOIN tasks t ON t.id=td.task_id WHERE t.title LIKE ?', ['Milestone%']))[0].n, 2);
+  const before = (await rows('SELECT COUNT(*) n FROM tasks'))[0].n;
+  const m = mp('plan.csv', PLAN());
+  const planStart = ymd(30);
+  const planned = schedule([
+    { key: 'A', days: 1, deps: [] },
+    { key: 'B', days: 5, deps: ['A'] },
+    { key: 'C', days: 3, deps: ['A'] },
+    { key: 'D', days: 0, deps: ['B', 'C'] }
+], planStart) as Map<string, { start: string; due: string }>;
+  assert.equal((await admin.call('POST', url(`/engagements/${E}/tasks/import?startDate=${planStart}`), m.payload, m.headers)).status, 403, 'client admins do not import plans'); assert.equal((await vendor.call('POST', url(`/engagements/${E}/tasks/import`), m.payload, m.headers)).status, 403);
+  const pv = await team.call('POST', url(`/engagements/${E}/tasks/import?startDate=${planStart}`), m.payload, m.headers); assert.equal(pv.status, 200, JSON.stringify(pv.body)); assert.equal(pv.body.confirmed, false); assert.equal(pv.body.counts.valid, 4); assert.equal(pv.body.rows[0].start, planned.get('A')!.start); assert.equal(pv.body.rows[3].due, planned.get('D')!.due); assert.equal((await rows('SELECT COUNT(*) n FROM tasks'))[0].n, before);
+  const badm = mp('plan.csv', PLAN('E,S,,Bad,,,,x,,,\n')); assert.equal((await team.call('POST', url(`/engagements/${E}/tasks/import?confirm=true&startDate=${planStart}`), badm.payload, badm.headers)).status, 422); assert.equal((await rows('SELECT COUNT(*) n FROM tasks'))[0].n, before);
+  const ok = await team.call('POST', url(`/engagements/${E}/tasks/import?confirm=true&startDate=${planStart}`), m.payload, m.headers); assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.created, 4);
+  const l = (await list(team)).tasks; const d = l.find((t: any) => t.title.startsWith('Milestone')); assert.equal(d.dueDate, planned.get('D')!.due); assert.equal(d.phase, 2); assert.equal(d.waitingOn, 2); assert.equal(d.taskNo, 7); assert.equal(l.find((t: any) => t.ref === 'A').priority, 'high'); assert.equal((await rows('SELECT COUNT(*) n FROM task_deps td JOIN tasks t ON t.id=td.task_id WHERE t.title LIKE ?', ['Milestone%']))[0].n, 2);
   assert.equal((await rows("SELECT COUNT(*) n FROM audit_events WHERE action='task.imported'"))[0].n, 1);
 });
 test('9. templates: platform administrators upload; staff apply to an engagement with a start date; archived ones disappear', async () => {
