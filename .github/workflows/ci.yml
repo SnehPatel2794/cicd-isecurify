@@ -18,7 +18,7 @@ jobs:
     env:
       TEST_ADMIN_URL: "mysql://root:root@127.0.0.1:3306/"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install PDF tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
@@ -80,7 +80,7 @@ jobs:
     env:
       PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: deploy-lint
         run: |
           export DOMAIN=grc.example.com
