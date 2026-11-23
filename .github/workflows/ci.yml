@@ -98,7 +98,7 @@ jobs:
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Log in to Docker Hub
         if: env.PUSH == 'true'
